@@ -1,84 +1,46 @@
 import time
 import pickle
 import itertools
-import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
-import numpy as np
-# matplotlib.use('Qt5Agg')
-
 from scipy.integrate import odeint
-import mod_dynamics_funs as mdf
-import funs
+import phys_funs as pf
+import channel_funs as cf
+import dynamics_funs as df
+from cfg import *
+from constants import *
 
-# ================ parameters =================
-file = open("nexus_point_neuron_parameters.pkl", 'rb')
-nexus_parameters = pickle.load(file)
+# =========== parameters ===========
+file = open("nexus_point_neuron_parameters.pkl",'rb')
+nexus_params = pickle.load(file)
 file.close()
 
-# Set random seed (for reproducibility)
-np.random.seed(1000)
-
-# Start and end time (in milliseconds)
-tmin = 0.0
-tmax = 300.0
-dt = 0.0025
+general_params = cfg_fig_8["h"]
+tmin = general_params["tmin"]
+tmax = general_params["tmax"]
+dt = general_params["dt"]
 T = np.arange(tmin, tmax, dt)
 
-to_mS = 1000
-shift = -39
-slope = 2.3
-k = 2.0e-3
+phys_params = cfg_fig_8["phys"]
+E_K = phys_params["E_K"]
+E_Ca = phys_params["E_Ca"]
+E_l = phys_params["E_l"]
+Cm = phys_params["Cm"]
+A = phys_params["A"]
+shift = phys_params["shift"]
+slope = phys_params["slope"]
+k = phys_params["k"]
 
-E_K = -85  # mV
-E_Ca = 120  # mV
-E_l = -77  # mV
-Cm = 1.0  # uF/cm2
+sim_params = cfg_fig_8["sim"]
+mul_K = sim_params["mul_K"]
+mul_gpas = sim_params["mul_gpas"]
+V_init = sim_params["V_init"]
 
-A = 1e-5  # cm2 (18 um cell diameter)
+amps = cfg_fig_8_2["sim"]["amp"]
+mul_Ca = cfg_fig_8_2["sim"]["mul_Ca"]
+Im_m_inits = cfg_fig_8_2["sim"]["Im_m_init"]
 
-mul_Ca = 5.1
-mul_K = 7.5
-mul_gpas = 1
-
-amps = np.array([0, 0.00015, 0.0003])
-
-V_init = -30
-Im_m_inits = np.array([0, 0.0683, 0.1287])  # for better phase plane visualization
 conditions = list(zip(amps, Im_m_inits))
-
-
-# ============== functions =============
-def I_ext(amp):
-    return amp
-
-
-def compute_derivatives(y, t0, amp):
-    dy = np.zeros((2,))
-
-    v = y[0]
-    Im_m = y[1]
-
-    Ca_HVA_h_inf = mdf.Ca_HVA_h_inf(E_l)
-    Ca_HVA_m_inf = mdf.Ca_HVA_m_inf(v)  # inst
-    gCa_HVA = mdf.calc_conductance('HVA_first_order', gCa_HVAbar, [Ca_HVA_m_inf, Ca_HVA_h_inf])
-
-    gIm = mdf.calc_conductance('Im', gImbar, [Im_m])
-
-    I_Ca_HVA = mdf.calc_current(v, gCa_HVA, E_Ca)
-    I_Im = mdf.calc_current(v, gIm, E_K)
-    I_l = mdf.calc_current(v, gl_pas, E_l)
-    I_I_ext = I_ext(amp) / A
-
-    # dv/dt
-    dy[0] = (I_I_ext - I_Ca_HVA - I_Im - I_l)/Cm
-
-    # Im dm/dt
-    alpha, beta = mdf.Im_m_alpha_beta_modified(v, shift, slope, k)
-    dy[1] = (alpha * (1.0 - Im_m)) - (beta * Im_m)
-
-    return dy
-
 
 # =============== simulation ============
 dic_log = {}
@@ -87,20 +49,22 @@ for con in conditions:
     tic = time.time()
     data = {}
 
-    gCa_HVAbar = nexus_parameters['gCa_HVAbar_Ca_HVA'] * mul_Ca * to_mS
-    gImbar = nexus_parameters['gImbar_Im'] * mul_K * to_mS
-    gl_pas = nexus_parameters['g_pas'] * mul_gpas * to_mS
+    gCa_HVAbar = nexus_params['gCa_HVAbar_Ca_HVA'] * mul_Ca * TO_MS
+    gImbar = nexus_params['gImbar_Im'] * mul_K * TO_MS
+    gl_pas = nexus_params['g_pas'] * mul_gpas * TO_MS
 
     # State vector parameters: v, all gates
     Y = np.array([V_init, Im_m_init])
 
     # Solve ODE system
-    Vy = odeint(compute_derivatives, Y, T, args=(amp,))
+    Vy = odeint(df.compute_derivatives_two_variables_model_constant_generation,
+                Y, T, args=(amp, gCa_HVAbar, gImbar, gl_pas, E_Ca, E_K, E_l, A, Cm, shift, slope, k))
 
     # get derivatives
     dy_list = []
     for i in range(len(T)):
-        dy = compute_derivatives(Vy[i], T[i], amp)
+        dy = df.compute_derivatives_two_variables_model_constant_generation(
+            Vy[i], T[i], amp, gCa_HVAbar, gImbar, gl_pas, E_Ca, E_K, E_l, A, Cm, shift, slope, k)
         dy_list.append(dy)
     Vdy = np.array(dy_list)
     v_dot_t = Vdy[:, 0]
@@ -109,17 +73,17 @@ for con in conditions:
     v_t = Vy[:, 0]
     Im_m_t = Vy[:, 1]
 
-    Ca_HVA_h_inf_t = np.ones_like(v_t) * mdf.Ca_HVA_h_inf(E_l)
-    Ca_HVA_m_inf_t = np.array([mdf.Ca_HVA_m_inf(v_ti) for v_ti in v_t])  # inst
-    gCa_HVA_t = mdf.calc_conductance('HVA_first_order', gCa_HVAbar, [Ca_HVA_m_inf_t, Ca_HVA_h_inf_t])
-    gIm_t = mdf.calc_conductance('Im', gImbar, [Im_m_t])
+    Ca_HVA_h_inf_t = np.ones_like(v_t) * cf.Ca_HVA_h_inf(E_l)
+    Ca_HVA_m_inf_t = np.array([cf.Ca_HVA_m_inf(v_ti) for v_ti in v_t])  # inst
+    gCa_HVA_t = pf.calc_conductance('HVA_first_order', gCa_HVAbar, [Ca_HVA_m_inf_t, Ca_HVA_h_inf_t])
+    gIm_t = pf.calc_conductance('Im', gImbar, [Im_m_t])
     gl_pas_t = gl_pas * np.ones(np.size(v_t))
 
-    I_Ca_HVA_t = mdf.calc_current(v_t, gCa_HVA_t, E_Ca)
-    I_Im_t = mdf.calc_current(v_t, gIm_t, E_K)
-    I_l_t = mdf.calc_current(v_t, gl_pas_t, E_l)
+    I_Ca_HVA_t = pf.calc_current(v_t, gCa_HVA_t, E_Ca)
+    I_Im_t = pf.calc_current(v_t, gIm_t, E_K)
+    I_l_t = pf.calc_current(v_t, gl_pas_t, E_l)
 
-    I_ext_per_area = I_ext(amp)/A
+    I_ext_per_area = pf.I_ext_constant(amp) / A
 
     data['v'] = v_t
     data['t'] = T
@@ -143,8 +107,7 @@ for con in conditions:
     dic_log[(amp, Im_m_init)] = data
 
     toc = time.time()
-    print('finished %f amp %f Im_m_init %f E_l %f mul_Ca %f mul_K in %f secs' % (
-        amp, Im_m_init, E_l, mul_Ca, mul_K, toc - tic))
+    print('finished %f amp %f Im_m_init in %f secs' % (amp, Im_m_init, toc - tic))
 
 # ========= plot ==========
 from matplotlib import cm
@@ -168,20 +131,22 @@ ax0.set_xlabel('ms', fontsize=16)
 ax0.set_ylabel('Vm (mV)', fontsize=16)
 # ax0.set_ylim([-100, 50])
 plt.show()
-# fig.savefig("./Fig8/fig8_add_constant_R5.svg", format='svg')
+if general_params["save_figs"]:
+    fig.savefig("./Fig8/fig8_add_constant.svg", format='svg')
 
 # ========== nullclines ===========
-Im_ms_low = 0
-Im_ms_high = 1
-Im_ms_delta = 0.0001
-Vs_low = -150
-Vs_high = 100
-Vs_delta = 0.025
-n_samples = 35
-scale = 10000
-dd = 1
-ss = 2
-lw = 2
+nclines_params = cfg_fig_8["nclines"]
+Im_ms_low = nclines_params["Im_ms_low"]
+Im_ms_high = nclines_params["Im_ms_high"]
+Im_ms_delta = nclines_params["Im_ms_delta"]
+Vs_low = nclines_params["Vs_low"]
+Vs_high = nclines_params["Vs_high"]
+Vs_delta = nclines_params["Vs_delta"]
+n_samples = nclines_params["n_samples"]
+scale = nclines_params["scale"]
+dd = nclines_params["dd"]
+ss = nclines_params["ss"]
+lw = nclines_params["lw"]
 
 Im_ms = np.arange(Im_ms_low, Im_ms_high + Im_ms_delta, Im_ms_delta)
 Vs = np.arange(Vs_low, Vs_high + Vs_delta, Vs_delta)
@@ -200,10 +165,10 @@ Im_ms_samp = Im_ms[Im_ms_samp_inds]
 samp_matrix = [Vs_samp.T, Im_ms_samp.T]
 x = np.array([p for p in itertools.product(*samp_matrix)])
 
-Ca_HVA_h_inf = mdf.Ca_HVA_h_inf(E_l)
-gCa_HVAbar = nexus_parameters['gCa_HVAbar_Ca_HVA'] * mul_Ca * to_mS
-gImbar = nexus_parameters['gImbar_Im'] * mul_K * to_mS
-gl_pas = nexus_parameters['g_pas'] * mul_gpas * to_mS
+Ca_HVA_h_inf = cf.Ca_HVA_h_inf(E_l)
+gCa_HVAbar = nexus_params['gCa_HVAbar_Ca_HVA'] * mul_Ca * TO_MS
+gImbar = nexus_params['gImbar_Im'] * mul_K * TO_MS
+gl_pas = nexus_params['g_pas'] * mul_gpas * TO_MS
 v_ncline_param_dict = {
     'gCa_HVAbar': gCa_HVAbar,
     'gImbar': gImbar,
@@ -221,48 +186,14 @@ Im_m_ncline_param_dict = {
 }
 ind_singular = int(np.where(abs(Vs - E_K) < 0.001)[0])
 
-
-def calc_x_dot(x):
-    x_dot = np.zeros_like(x)
-
-    n_conditions = x.shape[0]
-
-    for i in range(n_conditions):
-        v = x[i, 0]
-        Im_m = x[i, 1]
-
-        Ca_HVA_h_inf = mdf.Ca_HVA_h_inf(E_l)
-        Ca_HVA_m_inf = mdf.Ca_HVA_m_inf(v)
-
-        gCa_HVA = mdf.calc_conductance('HVA_first_order', gCa_HVAbar, [Ca_HVA_m_inf, Ca_HVA_h_inf])
-
-        gIm = mdf.calc_conductance('Im', gImbar, [Im_m])
-
-        I_Ca_HVA = mdf.calc_current(v, gCa_HVA, E_Ca)
-        I_Im = mdf.calc_current(v, gIm, E_K)
-        I_l = mdf.calc_current(v, gl_pas, E_l)
-        I_I_ext = I_ext(amp) / A
-
-        # dv/dt
-        v_dot = (I_I_ext - I_Ca_HVA - I_Im - I_l) / Cm
-
-        # Im dm/dt
-        alpha, beta = mdf.Im_m_alpha_beta_modified(v, shift, slope, k)
-        Im_m_dot = (alpha * (1.0 - Im_m)) - (beta * Im_m)
-
-        x_dot[i, :] = np.hstack((v_dot, Im_m_dot))
-
-    return x_dot
-
-
 # draw nullclines
 # ===============
 fig, ax = plt.subplots(1, 1, figsize=(4, 4))
 for j, con in enumerate(conditions):
     amp, Im_m_init = con
     v_ncline_param_dict['I_ext_per_area'] = dic_log[(amp, Im_m_init)]['I_ext_per_area']
-    yIm_m_vnull = funs.v_ncline(Vs, v_ncline_param_dict)
-    yIm_m_mnull = funs.Im_m_ncline(Vs, Im_m_ncline_param_dict)
+    yIm_m_vnull = df.v_ncline(Vs, v_ncline_param_dict)
+    yIm_m_mnull = df.Im_m_ncline(Vs, Im_m_ncline_param_dict)
 
     # draw nullclines
     ax.plot(Vs[ind_singular + 1:], yIm_m_vnull[ind_singular + 1:],
@@ -273,7 +204,10 @@ for j, con in enumerate(conditions):
     ax.set_ylabel('Im_m', fontsize=16)
 
     # calc field arrows
-    x_dot = calc_x_dot(x)
+    x_dot = df.two_variables_model_constant_generation_calc_x_dot_all_pairs(x, amp,
+                                                                            gCa_HVAbar, gImbar, gl_pas,
+                                                                            E_Ca, E_K, E_l, A, Cm,
+                                                                            shift, slope, k)
 
     # draw calcium spike trajectory
     v_t = dic_log[(amp, Im_m_init)]['v']
@@ -286,4 +220,5 @@ for j, con in enumerate(conditions):
     ax.set_ylim([0 - 0.01, 1 + 0.01])
 
 plt.show()
-# fig.savefig("./Fig8/fig8_phase_plane_constant_R5.svg", format='svg')
+if general_params["save_figs"]:
+    fig.savefig("./Fig8/fig8_phase_plane_constant.svg", format='svg')
